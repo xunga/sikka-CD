@@ -1,8 +1,8 @@
 Package.describe({
   'summary': 'Sikka-CM - A Community Maintained Firewall for Meteor Apps',
   'name': 'xunga:sikka-cm',
-  'version': '1.0.1',
-  'git': 'https://github.com/meteorhacks/sikka.git'
+  'version': '1.0.2',
+  'git': 'https://github.com/xunga/sikka-CM.git'
 });
 
 Npm.depends({
