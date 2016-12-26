@@ -1,233 +1,105 @@
-var request = Npm.require('request');
-var Cookies = Npm.require('cookies');
+var captchaPageTemplate = Assets.getText('lib/server/captcha_page.html');
+var genCaptchaPage = _.template(captchaPageTemplate);
+var urlParse = Npm.require("url").parse;
+var request = Npm.require("request");
+var Cookies = Npm.require("cookies");
 
-Tinytest.add("routes - middlewares - when a valid human", function(test) {
-  var humanToken = Random.id();
-  var req = buildRequest(null, humanToken);
+Sikka.routes = {};
+Sikka.routes._validationMiddleware =
+    function _validationMiddleware(req, res, next) {
+      // check for cookies
+      var ip = Sikka._getIp(req.headers, req.socket.remoteAddress);
+      var cookies = new Cookies(req, res);
+      var humanToken = cookies.get('sikka-human-token');
 
-  var next = sinon.stub();
-  var newSikka = {
-    _isValidHuman: sinon.stub()
-  };
+      if(Sikka._isValidHuman(humanToken)) {
+        return next();
+      }
 
-  WithNew(Sikka, newSikka, function() {
-    newSikka._isValidHuman.onCall(0).returns(true);
-    Sikka.routes._validationMiddleware(req, null, next);
-    test.equal(next.callCount, 1);
-    test.equal(newSikka._isValidHuman.args[0], [humanToken]);
-  });
-});
+      if(req.url.match(/\/verify-captcha/)) {
+        return next();
+      }
 
-Tinytest.add("routes - middlewares - /verify-captcha page", function(test) {
-  var req = buildRequest();
-  req.url = "/verify-captcha?some=args";
+      // Now this request is not coming from a human
+      // And check if this app is only for humans
+      if(Config.onlyForHumans) {
+        return Sikka.routes._sendCaptchPage(req, res);
+      }
 
-  var next = sinon.stub();
-  Sikka.routes._validationMiddleware(req, null, next);
-  test.equal(next.callCount, 1);
-});
+      if(!Sikka._isBlocked(ip)) {
+        return next();
+      }
 
-Tinytest.add("routes - middlewares - when only for humans (but not a human)", function(test) {
-  var newConfig = {
-    onlyForHumans: true
-  };
+      Sikka.routes._sendCaptchPage(req, res);
+    };
 
-  var newSikkaRoutes = {
-    _sendCaptchPage: sinon.stub()
-  };
-
-  var req = buildRequest();
-  req.url = "/";
-
-  WithNew(Config, newConfig, function() {
-    WithNew(Sikka.routes, newSikkaRoutes, function() {
-      var dummyValue = Random.id();
-      newSikkaRoutes._sendCaptchPage.onCall(0).returns(dummyValue);
-      var result = Sikka.routes._validationMiddleware(req, null, null);
-
-      test.equal(result, dummyValue);
-      test.equal(newSikkaRoutes._sendCaptchPage.callCount, 1);
-    });
-  });
-});
-
-Tinytest.add("routes - middlewares - when ip is not blocked", function(test) {
-  var ip = Random.id();
-  var req = buildRequest(ip);
-  req.url = "/";
-
-  var next = sinon.stub();
-  var newSikka = {
-    _isBlocked: sinon.stub()
-  };
-
-  var next = sinon.stub();
-
-  WithNew(Sikka, newSikka, function() {
-    newSikka._isBlocked.onCall(0).returns(false);
-    Sikka.routes._validationMiddleware(req, null, next);
-    test.equal(next.callCount, 1);
-    test.equal(newSikka._isBlocked.args[0], [ip]);
-  });
-});
-
-Tinytest.add("routes - middlewares - when ip not blocked", function(test) {
-  var ip = Random.id();
-  var req = buildRequest(ip);
-  req.url = "/";
-
-  var newSikka = {
-    _isBlocked: sinon.stub()
-  };
-  var newSikkaRoutes = {
-    _sendCaptchPage: sinon.stub()
-  };
-
-  WithNew(Sikka.routes, newSikkaRoutes, function() {
-    WithNew(Sikka, newSikka, function() {
-      newSikka._isBlocked.onCall(0).returns(true);
-      Sikka.routes._validationMiddleware(req, null);
-      test.equal(newSikka._isBlocked.args[0], [ip]);
-      test.equal(newSikkaRoutes._sendCaptchPage.callCount, 1);
-    });
-  });
-});
-
-Tinytest.add("routes - captcha page - render it", function(test) {
-  var req = {url: Random.id()};
-  var res = {
-    writeHead: sinon.stub(),
-    end: sinon.stub()
-  };
-
-  Sikka.routes._sendCaptchPage(req, res);
-  test.equal(!!res.end.args[0][0].match(res.end), true);
-  test.equal(res.writeHead.args[0], [200, {'Content-Type': 'html'}]);
-});
-
-Tinytest.add("routes - process captcha - when request failed", function(test) {
-  var captchaResponse = Random.id();
-  var url = "/verify-captcha?g-recaptcha-response=" + captchaResponse;
-  var req = {url: url};
-  var res = {
-    writeHead: sinon.stub(),
-    end: sinon.stub()
-  };
-
-  var newRequest = {
-    post: sinon.stub()
-  };
-
-  WithNew(request, newRequest, function() {
-    newRequest.post.onCall(0).callsArgWith(2, new Error());
-    Sikka.routes._processCaptcha(req, res);
-
-    test.equal(res.writeHead.args[0][0], 500);
-    test.equal(res.end.callCount, 1);
-    test.equal(newRequest.post.args[0][1].formData.response, captchaResponse);
-  });
-});
-
-Tinytest.add("routes - process captcha - when verification completed", function(test) {
-  var captchaResponse = Random.id();
-  var redirectUrl = Random.id();
-  var url = "/verify-captcha?" +
-    "g-recaptcha-response=" + captchaResponse + "&" +
-    "redirect-url=" + redirectUrl;
-
-  var req = {url: url};
-  var res = {
-    writeHead: sinon.stub(),
-    end: sinon.stub()
-  };
-
-  var newRequest = {
-    post: sinon.stub()
-  };
-
-  var newSikkaRoutes = {
-    _setSikkaHumanToken: sinon.stub()
-  };
-
-  WithNew(Sikka.routes, newSikkaRoutes, function() {
-    WithNew(request, newRequest, function() {
-      var captchaVerification = {success: true};
-      newRequest.post.onCall(0).callsArgWith(2, null, {}, JSON.stringify(captchaVerification));
+Sikka.routes._verifyCaptchaMiddleware =
+    function _verifyCaptchaMiddleware(params, req, res) {
       Sikka.routes._processCaptcha(req, res);
+    };
 
-      test.equal(res.writeHead.args[0], [301, {'Location': redirectUrl}]);
-      test.equal(res.end.callCount, 1);
-      test.equal(newSikkaRoutes._setSikkaHumanToken.callCount, 1);
-    });
-  });
-});
-
-Tinytest.add("routes - process captcha - when verification failed", function(test) {
-  var captchaResponse = Random.id();
-  var redirectUrl = Random.id();
-  var url = "/verify-captcha?" +
-    "g-recaptcha-response=" + captchaResponse + "&" +
-    "redirect-url=" + redirectUrl;
-
-  var req = {url: url};
-  var res = {
-    writeHead: sinon.stub(),
-    end: sinon.stub()
+Sikka.routes._sendCaptchPage = function _sendCaptchPage(req, res) {
+  res.writeHead(200, {'Content-Type': 'text/html'});
+  var tmplValues = {
+    captchaSiteKey: Config.captcha.siteKey,
+    redirectUrl: req.url
   };
+  var captchPage = genCaptchaPage(tmplValues);
+  res.end(captchPage);
+  return true;
+};
 
-  var newRequest = {
-    post: sinon.stub()
-  };
+Sikka.routes._processCaptcha = function _processCaptcha(req, res) {
+  var parsedUrl = urlParse(req.url, true);
+  var captchResponse = parsedUrl.query['g-recaptcha-response'];
 
-  WithNew(request, newRequest, function() {
-    var captchaVerification = {success: false};
-    newRequest.post.onCall(0).callsArgWith(2, null, {}, JSON.stringify(captchaVerification));
-    Sikka.routes._processCaptcha(req, res);
+  if (!captchResponse){
+    console.error("Sikka: Captcha route param not provided");
+    res.writeHead(500);
+    return res.end("Sikka: Captcha route param not provided");
 
-    test.equal(res.writeHead.args[0], [401]);
-    test.equal(res.end.callCount, 1);
-  });
-});
+  }
 
-Tinytest.add("routes - _setSikkaHumanToken", function(test) {
-  var req = {};
-  var res = {};
+  var redirectUrl = parsedUrl.query['redirect-url'];
 
-  var newSikka = {
-    _addHumanFor: sinon.stub()
-  };
-
-  var newCookiesProto = {
-    set: sinon.stub()
-  };
-
-  WithNew(Cookies.prototype, newCookiesProto, function() {
-    WithNew(Sikka, newSikka, function() {
-      Sikka.routes._setSikkaHumanToken(req, res);
-
-      var token = newSikka._addHumanFor.args[0][0];
-      test.equal(newCookiesProto.set.callCount, 1);
-      test.equal(newCookiesProto.set.args[0], [
-        "sikka-human-token",
-        token,
-        {httpOnly: false}
-      ]);
-    });
-  });
-});
-
-function buildRequest(ip, humanToken) {
-  ip = ip || Random.id();
-  humanToken = humanToken || Random.id();
-
-  var req = {
-    headers: {
-      'cookie': 'sikka-human-token=' + humanToken
-    },
-    socket: {
-      remoteAddress: ip
+  request.post("https://www.google.com/recaptcha/api/siteverify", {
+    formData: {
+      secret: Config.captcha.secret,
+      response: captchResponse
     }
-  };
+  }, withResponse);
 
-  return req;
-}
+  function withResponse(err, r, body) {
+    if(err) {
+      console.error("Sikka: Captcha verification error: ", err.message);
+      res.writeHead(500);
+      return res.end("Captcha verification errored!");
+    }
+
+    var response = JSON.parse(body);
+
+    if(response.success) {
+      Sikka.routes._setSikkaHumanToken(req, res);
+      res.writeHead(301, {
+        "Location": redirectUrl
+      });
+      res.end();
+    } else {
+      console.error("Sikka: Captcha verification failed!", response);
+      res.writeHead(401);
+      res.end("Captcha verification failed!");
+    }
+  }
+};
+
+Sikka.routes._setSikkaHumanToken = function _setSikkaHumanToken(req, res) {
+  var cookies = new Cookies(req, res);
+  var token = Random.id();
+  // We need to make the load balancing sticky for this
+  Sikka._addHumanFor(token, Config.times.humanLivesUpto);
+  cookies.set("sikka-human-token", token, {httpOnly: false});
+};
+
+// Main Logic
+Picker.middleware(Sikka.routes._validationMiddleware);
+Picker.route('/verify-captcha', Sikka.routes._verifyCaptchaMiddleware);
